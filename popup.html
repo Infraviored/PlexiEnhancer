@@ -179,21 +179,28 @@
     </div>
     <div class="setting-container" style="display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: #1a1a1a; border: 1px solid var(--border); transition: border-color 0.2s; margin-top: 12px;">
         <label for="favoriteModel" style="font-size: 14px; font-weight: 500; color: var(--fg);">Favorite Model</label>
-        <select id="favoriteModel" title="Select the model you want to enforce as your favorite">
+        <select id="favoriteModel" title="Your favorite model">
             <option value="">No models loaded</option>
         </select>
         <button type="button" id="getModelsBtn" title="Scrape and retrieve available models from Perplexity">Get Models</button>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);" title="Enable or disable the thinking process flag for the selected model">
-            <span class="label" style="font-size: 13px; font-weight: 500; color: var(--fg);">Enable Thinking</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);" title="Select the favorite model in new tabs. A model you pick by hand always wins for that tab.">
+            <span class="label" style="font-size: 13px; font-weight: 500; color: var(--fg);">Apply favorite model</span>
             <label class="switch">
-                <input type="checkbox" id="enableThinkingToggle">
+                <input type="checkbox" id="applyFavoriteModelToggle">
                 <span class="slider"></span>
             </label>
         </div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);" title="Enforce the favorite model immediately upon page load">
-            <span class="label" style="font-size: 13px; font-weight: 500; color: var(--fg);">Enforce on load</span>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);" title="If Perplexity resets the model you picked by hand in a tab, switch back to it.">
+            <span class="label" style="font-size: 13px; font-weight: 500; color: var(--fg);">Keep tab's manual pick</span>
             <label class="switch">
-                <input type="checkbox" id="enforceModelOnLoadToggle">
+                <input type="checkbox" id="keepTabModelToggle">
+                <span class="slider"></span>
+            </label>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--border);" title="Turn thinking on when the current model supports it. If you turn it off by hand, that tab is left alone.">
+            <span class="label" style="font-size: 13px; font-weight: 500; color: var(--fg);">Enforce thinking</span>
+            <label class="switch">
+                <input type="checkbox" id="enforceThinkingToggle">
                 <span class="slider"></span>
             </label>
         </div>

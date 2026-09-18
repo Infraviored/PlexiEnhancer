@@ -1,10 +1,16 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const hideToggle = document.getElementById('hideCitationsToggle');
-  const removeAdsToggle = document.getElementById('removeComputerAdsToggle');
   const modelInput = document.getElementById('favoriteModel');
-  const thinkingToggle = document.getElementById('enableThinkingToggle');
-  const enforceOnLoadToggle = document.getElementById('enforceModelOnLoadToggle');
   const getModelsBtn = document.getElementById('getModelsBtn');
+
+  // storage key -> [checkbox id, default when unset]
+  const TOGGLES = {
+    hideCitations: ['hideCitationsToggle', false],
+    removeComputerAds: ['removeComputerAdsToggle', true],
+    applyFavoriteModel: ['applyFavoriteModelToggle', false],
+    keepTabModel: ['keepTabModelToggle', true],
+    enforceThinking: ['enforceThinkingToggle', false],
+  };
+  const SETTING_KEYS = [...Object.keys(TOGGLES), 'favoriteModel', 'availableModels'];
 
   function populateModels(models, favorite) {
     modelInput.innerHTML = '';
@@ -26,88 +32,33 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Load current state
-  chrome.storage.local.get(['hideCitations', 'removeComputerAds', 'favoriteModel', 'enableThinking', 'enforceModelOnLoad', 'availableModels'], (result) => {
-    hideToggle.checked = result.hideCitations || false;
-    removeAdsToggle.checked = result.removeComputerAds !== false; // Default to true if not set
-    thinkingToggle.checked = result.enableThinking !== false; // Default to true if not set
-    enforceOnLoadToggle.checked = result.enforceModelOnLoad !== false; // Default to true if not set
+  function render(result) {
+    for (const [key, [id, fallback]] of Object.entries(TOGGLES)) {
+      document.getElementById(id).checked = typeof result[key] === 'boolean' ? result[key] : fallback;
+    }
     populateModels(result.availableModels, result.favoriteModel || '');
-  });
+  }
 
-  // Handle hide citations toggle change
-  hideToggle.addEventListener('change', () => {
-    const hideCitations = hideToggle.checked;
-    chrome.storage.local.set({ hideCitations }, () => {
+  function saveSetting(settings) {
+    chrome.storage.local.set(settings, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: 'updateSettings',
-            settings: { hideCitations }
-          });
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'updateSettings', settings });
         }
       });
     });
-  });
+  }
 
-  // Handle remove ads toggle change
-  removeAdsToggle.addEventListener('change', () => {
-    const removeComputerAds = removeAdsToggle.checked;
-    chrome.storage.local.set({ removeComputerAds }, () => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: 'updateSettings',
-            settings: { removeComputerAds }
-          });
-        }
-      });
-    });
-  });
+  // Load current state
+  chrome.storage.local.get(SETTING_KEYS, render);
 
-  // Handle favorite model change
+  for (const [key, [id]] of Object.entries(TOGGLES)) {
+    const toggle = document.getElementById(id);
+    toggle.addEventListener('change', () => saveSetting({ [key]: toggle.checked }));
+  }
+
   modelInput.addEventListener('change', () => {
-    const favoriteModel = modelInput.value.trim();
-    chrome.storage.local.set({ favoriteModel }, () => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: 'updateSettings',
-            settings: { favoriteModel }
-          });
-        }
-      });
-    });
-  });
-
-  // Handle enable thinking change
-  thinkingToggle.addEventListener('change', () => {
-    const enableThinking = thinkingToggle.checked;
-    chrome.storage.local.set({ enableThinking }, () => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: 'updateSettings',
-            settings: { enableThinking }
-          });
-        }
-      });
-    });
-  });
-
-  // Handle enforce model on load change
-  enforceOnLoadToggle.addEventListener('change', () => {
-    const enforceModelOnLoad = enforceOnLoadToggle.checked;
-    chrome.storage.local.set({ enforceModelOnLoad }, () => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, {
-            action: 'updateSettings',
-            settings: { enforceModelOnLoad }
-          });
-        }
-      });
-    });
+    saveSetting({ favoriteModel: modelInput.value.trim() });
   });
 
   // Handle Get Models click
@@ -150,13 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Listen for external settings updates (e.g. from onboarding card on the page)
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === 'settingsUpdatedExternally') {
-      chrome.storage.local.get(['hideCitations', 'removeComputerAds', 'favoriteModel', 'enableThinking', 'enforceModelOnLoad', 'availableModels'], (result) => {
-        hideToggle.checked = result.hideCitations || false;
-        removeAdsToggle.checked = result.removeComputerAds !== false;
-        thinkingToggle.checked = result.enableThinking !== false;
-        enforceOnLoadToggle.checked = result.enforceModelOnLoad !== false;
-        populateModels(result.availableModels, result.favoriteModel || '');
-      });
+      chrome.storage.local.get(SETTING_KEYS, render);
     }
   });
 });

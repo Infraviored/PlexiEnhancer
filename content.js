@@ -8,9 +8,10 @@
     TEMP_STATUS_DURATION: 1200,
     DEBOUNCE_DELAY: 250,
     AUTO_SELECT_COOLDOWN: 5000,
+    AUTO_ACTION_WINDOW: 60000,
+    AUTO_ACTION_MAX: 3,
     MENU_RENDER_TIMEOUT: 1500,
     SELECTION_WAIT: 200,
-    REOPEN_WAIT: 100,
     THINKING_TOGGLE_WAIT: 50,
     SCRAPE_MENU_WAIT: 200,
   };
@@ -64,11 +65,29 @@
     lastSelectionTime: 0,
     chatObserver: null,
     observedContainer: null,
-    enableThinking: true,
+    applyFavoriteModel: false,
+    keepTabModel: true,
+    enforceThinking: false,
     isSelectingModel: false,
-    hasAppliedFavorite: false,
-    enforceModelOnLoad: true,
     lastObservedModelText: '',
+    autoActionLog: [],
+    noThinkingModels: new Set(),
+  };
+
+  // Per-tab memory (sessionStorage survives reloads but is private to the tab).
+  const TAB_MODEL_KEY = 'plexienhancer.tabModel';
+  const TAB_THINKING_OFF_KEY = 'plexienhancer.tabThinkingOff';
+
+  const tabStore = {
+    get(key) {
+      try { return sessionStorage.getItem(key) || ''; } catch (e) { return ''; }
+    },
+    set(key, value) {
+      try {
+        if (value) sessionStorage.setItem(key, value);
+        else sessionStorage.removeItem(key);
+      } catch (e) { }
+    },
   };
 
   const CITATION_HIDE_STYLE = `
@@ -407,12 +426,6 @@
     };
   }
 
-  const isDefaultModel = (text) => {
-    if (!text) return true;
-    const clean = text.toLowerCase().trim();
-    return clean === 'best' || clean === 'best selects the best available model' || clean === 'model' || clean === 'pro' || clean === '';
-  };
-
   const findTriggerButton = () => {
     const chatContainer = document.querySelector('[data-ask-input-container="true"]');
     if (chatContainer) {
@@ -429,224 +442,243 @@
            document.querySelector('[class*="animate-pplxIndicator"]') !== null;
   };
 
-  async function checkAndApplyFavoriteModel() {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const isThinkingLabel = (text) => /\bthinking\s*$/i.test(text || '');
+
+  const isLockedItem = (item) =>
+    item.querySelector('svg use[*|href*="lock"]') !== null ||
+    item.querySelector('svg use[*|href*="pplx-icon-lock"]') !== null;
+
+  const isThinkingItem = (item) =>
+    item.getAttribute('role') === 'menuitemcheckbox' || item.querySelector('[role="switch"]') !== null;
+
+  const primaryName = (item) => item.innerText.split('\n')[0].trim();
+
+  const findModelItem = (items, name) =>
+    items.find(item => !isLockedItem(item) && !isThinkingItem(item) &&
+      (isMatch(primaryName(item), name) || isMatch(item.innerText, name)));
+
+  const isModelMenuOpen = () => findTriggerButton()?.getAttribute('aria-expanded') === 'true';
+
+  // Model the tab should be on: a manual pick made in this tab wins over the favorite.
+  function targetModel() {
+    const tabModel = tabStore.get(TAB_MODEL_KEY);
+    if (tabModel) return state.keepTabModel ? tabModel : '';
+    return state.applyFavoriteModel ? state.favoriteModel : '';
+  }
+
+  // Caps automatic menu sessions so we never fight Perplexity in a loop.
+  function allowAutoAction(now) {
+    state.autoActionLog = state.autoActionLog.filter(t => now - t < CONFIG.AUTO_ACTION_WINDOW);
+    if (state.autoActionLog.length >= CONFIG.AUTO_ACTION_MAX) {
+      console.warn("[PlexiCopy] Too many automatic model changes, pausing until the next manual action.");
+      return false;
+    }
+    state.autoActionLog.push(now);
+    return true;
+  }
+
+  // Remember what the user picks by hand (trusted events only; our own dispatched events are untrusted).
+  function handleUserMenuAction(event) {
+    if (!event.isTrusted || state.isSelectingModel) return;
+    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+    const item = event.target.closest?.('[role="menuitemradio"], [role="menuitem"], [role="menuitemcheckbox"]');
+    if (!item || item.hasAttribute('aria-haspopup') || !isModelMenuOpen()) return;
+
+    state.autoActionLog = [];
+    if (isThinkingItem(item)) {
+      const wasOn = item.getAttribute('aria-checked') === 'true';
+      tabStore.set(TAB_THINKING_OFF_KEY, wasOn ? '1' : '');
+      console.log("[PlexiCopy] User toggled thinking manually. Now:", !wasOn);
+      return;
+    }
+    if (isLockedItem(item)) return;
+    const name = primaryName(item);
+    if (name) {
+      tabStore.set(TAB_MODEL_KEY, name);
+      console.log("[PlexiCopy] User picked model manually:", name);
+    }
+  }
+
+  function dispatchClickSequence(el) {
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+      let evt;
+      if (type.startsWith('pointer')) {
+        evt = new PointerEvent(type, { bubbles: true, cancelable: true });
+      } else if (type.startsWith('mouse')) {
+        evt = new MouseEvent(type, { bubbles: true, cancelable: true });
+      } else {
+        evt = new Event(type, { bubbles: true, cancelable: true });
+      }
+      el.dispatchEvent(evt);
+    });
+  }
+
+  function waitForMenuItems() {
+    return new Promise((resolve, reject) => {
+      const query = () => document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]');
+      const existingItems = query();
+      if (existingItems.length > 0) {
+        resolve(Array.from(existingItems));
+        return;
+      }
+
+      const menuObserver = new MutationObserver(() => {
+        const items = query();
+        if (items.length > 0) {
+          menuObserver.disconnect();
+          resolve(Array.from(items));
+        }
+      });
+      menuObserver.observe(document.body, { childList: true, subtree: true });
+
+      setTimeout(() => {
+        menuObserver.disconnect();
+        reject(new Error("Timeout waiting for menu items"));
+      }, CONFIG.MENU_RENDER_TIMEOUT);
+    });
+  }
+
+  function openModelMenu(trigger) {
+    trigger.focus();
+    trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    trigger.click();
+    return waitForMenuItems();
+  }
+
+  function closeModelMenu() {
+    const menu = document.querySelector('[role="menu"]');
+    if (menu) {
+      menu.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Escape',
+        code: 'Escape',
+        keyCode: 27,
+        which: 27,
+        bubbles: true,
+        cancelable: true
+      }));
+    }
+    document.getElementById('ask-input')?.focus();
+  }
+
+  // Turns thinking on for the given model item. Returns 'unsupported' if the model has no thinking switch.
+  async function ensureThinkingOn(modelItem) {
+    const thinkingItem = modelItem.parentElement?.querySelector('[role="menuitemcheckbox"]');
+    if (!thinkingItem) return 'unsupported';
+
+    const isDisabled = thinkingItem.getAttribute('aria-disabled') === 'true' ||
+                       thinkingItem.hasAttribute('data-disabled') ||
+                       thinkingItem.querySelector('button[disabled]') !== null;
+    if (isDisabled || thinkingItem.getAttribute('aria-checked') === 'true') return 'ok';
+
+    console.log("[PlexiCopy] Turning thinking on...");
+    const toggleTarget = thinkingItem.querySelector('button[role="switch"]') ||
+                         thinkingItem.querySelector('button') ||
+                         thinkingItem;
+    dispatchClickSequence(toggleTarget);
+    await sleep(CONFIG.THINKING_TOGGLE_WAIT);
+    return 'ok';
+  }
+
+  const shouldEnforceThinking = () => state.enforceThinking && tabStore.get(TAB_THINKING_OFF_KEY) !== '1';
+
+  // One automatic trip through the model menu: optionally select `selectName`, then optionally enforce thinking.
+  async function runModelMenuSession(trigger, selectName, currentLabel) {
+    state.isSelectingModel = true;
+    state.lastSelectionTime = Date.now();
+    try {
+      let items = await openModelMenu(trigger);
+
+      if (selectName) {
+        const item = findModelItem(items, selectName);
+        if (!item) {
+          console.warn("[PlexiCopy] Model not available in menu:", selectName);
+          closeModelMenu();
+          return;
+        }
+        console.log("[PlexiCopy] Selecting model:", primaryName(item));
+        dispatchClickSequence(item);
+        await sleep(CONFIG.SELECTION_WAIT);
+
+        if (!shouldEnforceThinking() || state.noThinkingModels.has(selectName)) {
+          closeModelMenu();
+          return;
+        }
+        if (!document.querySelector('[role="menu"]')) {
+          const freshTrigger = findTriggerButton();
+          if (!freshTrigger) return;
+          items = await openModelMenu(freshTrigger);
+        } else {
+          items = Array.from(document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]'));
+        }
+      }
+
+      const modelName = selectName || currentLabel;
+      const activeItem = findModelItem(items, modelName) ||
+        items.find(item => item.getAttribute('aria-checked') === 'true' && !isThinkingItem(item));
+      if (activeItem && (await ensureThinkingOn(activeItem)) === 'unsupported') {
+        state.noThinkingModels.add(modelName);
+      }
+      closeModelMenu();
+    } catch (err) {
+      console.error("[PlexiCopy] ERROR during model menu session:", err);
+      closeModelMenu();
+    } finally {
+      // Re-check once the cooldown ends, in case Perplexity reset the model again in the meantime.
+      state.lastObservedModelText = '';
+      state.lastSelectionTime = Date.now();
+      state.isSelectingModel = false;
+      setTimeout(debouncedSyncModel, CONFIG.AUTO_SELECT_COOLDOWN + 50);
+    }
+  }
+
+  async function syncModel() {
     if (state.isSelectingModel) return;
-    if (!state.favoriteModel) return;
 
     const trigger = findTriggerButton();
-    if (!trigger) return;
+    if (!trigger || trigger.getAttribute('aria-expanded') === 'true') return;
 
     const currentModelText = trigger.innerText.trim();
 
     // If the model label has not changed since our last check, avoid running any logic.
-    if (currentModelText === state.lastObservedModelText) {
-      return;
-    }
+    if (currentModelText === state.lastObservedModelText) return;
 
-    // Wait until Perplexity is done processing/generating before attempting selection.
-    if (isGenerating()) {
+    // Wait until Perplexity is done processing/generating before touching the menu.
+    if (isGenerating()) return;
+
+    const now = Date.now();
+    const cooldownLeft = CONFIG.AUTO_SELECT_COOLDOWN - (now - state.lastSelectionTime);
+    if (cooldownLeft > 0) {
+      setTimeout(debouncedSyncModel, cooldownLeft + 50);
       return;
     }
 
     state.lastObservedModelText = currentModelText;
 
-    console.log("[PlexiCopy] checkAndApplyFavoriteModel active. Favorite Model:", state.favoriteModel || "(none)", "Selecting:", state.isSelectingModel, "Has applied favorite:", state.hasAppliedFavorite);
+    const target = targetModel();
+    const needsModel = target && !isMatch(currentModelText, target);
+    const needsThinking = shouldEnforceThinking() && !isThinkingLabel(currentModelText) &&
+      !state.noThinkingModels.has(target || currentModelText);
 
-    const now = Date.now();
-    if (now - state.lastSelectionTime < CONFIG.AUTO_SELECT_COOLDOWN) {
-      console.log("[PlexiCopy] Cooldown active, skipping check. Remaining:", CONFIG.AUTO_SELECT_COOLDOWN - (now - state.lastSelectionTime), "ms");
-      return;
-    }
+    if (!needsModel && !needsThinking) return;
+    if (!allowAutoAction(now)) return;
 
-    console.log("[PlexiCopy] Current model label on page is:", currentModelText);
-    if (isMatch(currentModelText, state.favoriteModel)) {
-      console.log("[PlexiCopy] Current model already matches favorite model. Marking as applied.");
-      state.hasAppliedFavorite = true;
-      return;
-    }
-
-    // On initial page initialization, we enforce the favorite model over whatever custom model Perplexity restored.
-    // Once applied, we only override default placeholder models to respect manual session selections.
-    if ((state.hasAppliedFavorite || !state.enforceModelOnLoad) && !isDefaultModel(currentModelText)) {
-      console.log("[PlexiCopy] Current model is a non-default custom selection, avoiding override.");
-      return;
-    }
-
-    console.log("[PlexiCopy] Enforcing favorite model selection:", state.favoriteModel);
-
-    state.isSelectingModel = true;
-    state.lastSelectionTime = now;
-
-    try {
-      console.log("[PlexiCopy] Step 1: Clicking trigger to open menu...");
-      trigger.focus();
-      trigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-      trigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-      trigger.click();
-
-      console.log("[PlexiCopy] Waiting for menu items...");
-      const menuItems = await new Promise((resolve, reject) => {
-        const existingItems = document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]');
-        if (existingItems.length > 0) {
-          console.log("[PlexiCopy] Menu items found immediately.");
-          resolve(Array.from(existingItems));
-          return;
-        }
-
-        const menuObserver = new MutationObserver(() => {
-          const items = document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]');
-          if (items.length > 0) {
-            console.log("[PlexiCopy] Menu items detected via MutationObserver.");
-            menuObserver.disconnect();
-            resolve(Array.from(items));
-          }
-        });
-
-        menuObserver.observe(document.body, { childList: true, subtree: true });
-
-        setTimeout(() => {
-          menuObserver.disconnect();
-          reject(new Error("Timeout waiting for menu items"));
-        }, CONFIG.MENU_RENDER_TIMEOUT);
-      });
-
-      console.log("[PlexiCopy] Total menu items:", menuItems.length);
-      const selectableItems = menuItems.filter(item => {
-        const hasLock = item.querySelector('svg use[*|href*="lock"]') !== null || 
-                        item.querySelector('svg use[*|href*="pplx-icon-lock"]') !== null;
-        return !hasLock;
-      });
-      console.log("[PlexiCopy] Selectable items:", selectableItems.length);
-
-      const matchedItem = selectableItems.find(item => {
-        const lines = item.innerText.split('\n');
-        const primaryName = lines[0].trim();
-        return isMatch(primaryName, state.favoriteModel) || isMatch(item.innerText, state.favoriteModel);
-      });
-
-      if (matchedItem) {
-        console.log("[PlexiCopy] Step 2: Clicking matched model item:", matchedItem.innerText.split('\n')[0].trim());
-        const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-        events.forEach(type => {
-          let evt;
-          if (type.startsWith('pointer')) {
-            evt = new PointerEvent(type, { bubbles: true, cancelable: true });
-          } else if (type.startsWith('mouse')) {
-            evt = new MouseEvent(type, { bubbles: true, cancelable: true });
-          } else {
-            evt = new Event(type, { bubbles: true, cancelable: true });
-          }
-          matchedItem.dispatchEvent(evt);
-        });
-
-        console.log(`[PlexiCopy] Step 3: Waiting ${CONFIG.SELECTION_WAIT}ms for selection registration...`);
-        await new Promise((resolve) => setTimeout(resolve, CONFIG.SELECTION_WAIT));
-
-        let activeMenu = document.querySelector('[role="menu"]');
-        if (!activeMenu) {
-          console.log("[PlexiCopy] Dropdown closed after selection. Re-opening for thinking switch check...");
-          const freshTrigger = findTriggerButton();
-          if (freshTrigger) {
-            freshTrigger.focus();
-            freshTrigger.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-            freshTrigger.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-            freshTrigger.click();
-            await new Promise((resolve) => setTimeout(resolve, CONFIG.REOPEN_WAIT));
-            activeMenu = document.querySelector('[role="menu"]');
-          }
-        }
-
-        if (activeMenu) {
-          console.log("[PlexiCopy] Dropdown is open. Locating active model item...");
-          const currentMenuItems = document.querySelectorAll('[role="menuitemradio"], [role="menuitem"]');
-          const activeModelItem = Array.from(currentMenuItems).find(item => {
-            const lines = item.innerText.split('\n');
-            const primaryName = lines[0].trim();
-            return isMatch(primaryName, state.favoriteModel) || isMatch(item.innerText, state.favoriteModel);
-          });
-
-          if (activeModelItem) {
-            console.log("[PlexiCopy] Active model item located. Inspecting parent container...");
-            const container = activeModelItem.parentElement;
-            if (container) {
-              const thinkingItem = container.querySelector('[role="menuitemcheckbox"]');
-              if (thinkingItem) {
-                const isDisabled = thinkingItem.getAttribute('aria-disabled') === 'true' || 
-                                   thinkingItem.hasAttribute('data-disabled') || 
-                                   thinkingItem.querySelector('button[disabled]') !== null;
-                
-                console.log("[PlexiCopy] Thinking switch found. Disabled:", isDisabled);
-                if (!isDisabled) {
-                  const isCurrentChecked = thinkingItem.getAttribute('aria-checked') === 'true';
-                  console.log("[PlexiCopy] Thinking state current:", isCurrentChecked, "target:", state.enableThinking);
-                  if (isCurrentChecked !== state.enableThinking) {
-                    console.log("[PlexiCopy] Step 4: Toggling the thinking switch...");
-                    const toggleTarget = thinkingItem.querySelector('button[role="switch"]') || 
-                                         thinkingItem.querySelector('button') || 
-                                         thinkingItem;
-                    
-                    const toggleEvents = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-                    toggleEvents.forEach(type => {
-                      let evt;
-                      if (type.startsWith('pointer')) {
-                        evt = new PointerEvent(type, { bubbles: true, cancelable: true });
-                      } else if (type.startsWith('mouse')) {
-                        evt = new MouseEvent(type, { bubbles: true, cancelable: true });
-                      } else {
-                        evt = new Event(type, { bubbles: true, cancelable: true });
-                      }
-                      toggleTarget.dispatchEvent(evt);
-                    });
-                    await new Promise((resolve) => setTimeout(resolve, CONFIG.THINKING_TOGGLE_WAIT));
-                  }
-                }
-              } else {
-                console.log("[PlexiCopy] No thinking switch found for this model.");
-              }
-            }
-          }
-        }
-
-        console.log("[PlexiCopy] Step 5: Closing the dropdown...");
-        const finalMenu = document.querySelector('[role="menu"]');
-        if (finalMenu) {
-          const escEvent = new KeyboardEvent('keydown', {
-            key: 'Escape',
-            code: 'Escape',
-            keyCode: 27,
-            which: 27,
-            bubbles: true,
-            cancelable: true
-          });
-          finalMenu.dispatchEvent(escEvent);
-        }
-
-        const inputEl = document.getElementById('ask-input');
-        if (inputEl) {
-          inputEl.focus();
-        }
-
-        state.hasAppliedFavorite = true;
-        console.log("[PlexiCopy] SUCCESS: Model selection finished successfully.");
-      } else {
-        console.warn("[PlexiCopy] Could not find matched item in menu for model:", state.favoriteModel);
-        trigger.click();
-      }
-      state.lastSelectionTime = Date.now();
-    } catch (err) {
-      console.error("[PlexiCopy] ERROR during checkAndApplyFavoriteModel:", err);
-      const freshTrigger = findTriggerButton();
-      if (freshTrigger && !freshTrigger.disabled && freshTrigger.getAttribute('aria-disabled') !== 'true') {
-        state.lastSelectionTime = 0;
-      } else {
-        state.lastSelectionTime = Date.now();
-      }
-    } finally {
-      state.isSelectingModel = false;
-    }
+    console.log("[PlexiCopy] Model label:", currentModelText, "target:", target || "(none)", "thinking:", needsThinking);
+    await runModelMenuSession(trigger, needsModel ? target : '', currentModelText);
   }
 
-  const debouncedCheckAndApplyFavoriteModel = debounce(checkAndApplyFavoriteModel, CONFIG.DEBOUNCE_DELAY);
+  const debouncedSyncModel = debounce(syncModel, CONFIG.DEBOUNCE_DELAY);
+
+  function resetModelSync({ clearTabModel = false, clearTabThinking = false }) {
+    if (clearTabModel) tabStore.set(TAB_MODEL_KEY, '');
+    if (clearTabThinking) tabStore.set(TAB_THINKING_OFF_KEY, '');
+    state.lastSelectionTime = 0;
+    state.lastObservedModelText = '';
+    state.autoActionLog = [];
+    debouncedSyncModel();
+  }
 
   function initChatObserver() {
     const container = document.querySelector('[data-ask-input-container="true"]');
@@ -669,7 +701,7 @@
 
     state.observedContainer = container;
     state.chatObserver = new MutationObserver(() => {
-      debouncedCheckAndApplyFavoriteModel();
+      debouncedSyncModel();
     });
 
     state.chatObserver.observe(container, { childList: true, subtree: true, characterData: true });
@@ -683,7 +715,7 @@
       }
     });
     initChatObserver();
-    debouncedCheckAndApplyFavoriteModel();
+    debouncedSyncModel();
   }
 
   const debouncedScanAndAttach = debounce(scanAndAttach, CONFIG.DEBOUNCE_DELAY);
@@ -838,7 +870,7 @@
     card.appendChild(titleContainer);
 
     const desc = document.createElement('p');
-    desc.innerText = 'Choose your favorite model to automatically prevent Perplexity from downgrading your session.';
+    desc.innerText = 'Pick a favorite model for new tabs. If you switch models by hand, that choice wins for the tab.';
     desc.style.cssText = `
       margin: 0 0 16px 0;
       font-size: 13px;
@@ -956,7 +988,7 @@
         `;
 
         const thinkingLabel = document.createElement('span');
-        thinkingLabel.innerText = 'Enable Thinking';
+        thinkingLabel.innerText = 'Enforce Thinking';
         thinkingLabel.style.cssText = `
           font-size: 13px;
           color: #aaa;
@@ -996,19 +1028,18 @@
         saveBtn.addEventListener('mouseout', () => saveBtn.style.background = '#2e7d32');
         saveBtn.addEventListener('click', () => {
           const selectedModel = select.value;
-          const enableThinking = thinkingInput.checked;
-          extensionApi.storage.local.set({ favoriteModel: selectedModel, availableModels: models, enableThinking: enableThinking }, () => {
+          const enforceThinking = thinkingInput.checked;
+          extensionApi.storage.local.set({ favoriteModel: selectedModel, availableModels: models, enforceThinking, applyFavoriteModel: true }, () => {
             state.favoriteModel = selectedModel;
-            state.enableThinking = enableThinking;
-            state.lastSelectionTime = 0;
-            state.hasAppliedFavorite = false;
-            state.lastObservedModelText = '';
+            state.enforceThinking = enforceThinking;
+            state.applyFavoriteModel = true;
+            resetModelSync({ clearTabModel: true, clearTabThinking: true });
             
             try {
               extensionApi.runtime.sendMessage({ action: 'settingsUpdatedExternally' });
             } catch(e){}
 
-            debouncedCheckAndApplyFavoriteModel();
+            debouncedSyncModel();
             
             contentDiv.innerHTML = '<div style="color: #4caf50; font-size: 13px; font-weight: 600; text-align: center; margin-top: 8px;">✓ Favorite model saved!</div>';
             setTimeout(() => {
@@ -1073,16 +1104,17 @@
       return;
     }
     console.log("[PlexiCopy] Reading stored settings...");
-    extensionApi.storage.local.get(['hideCitations', 'removeComputerAds', 'favoriteModel', 'enableThinking', 'enforceModelOnLoad', 'onboardingDismissed'], (result) => {
+    extensionApi.storage.local.get(['hideCitations', 'removeComputerAds', 'favoriteModel', 'applyFavoriteModel', 'keepTabModel', 'enforceThinking', 'onboardingDismissed'], (result) => {
       console.log("[PlexiCopy] Retrieved settings from storage:", result);
       state.hideCitations = result.hideCitations || false;
       state.removeComputerAds = result.removeComputerAds !== false;
       state.favoriteModel = result.favoriteModel || '';
-      state.enableThinking = result.enableThinking !== false;
-      state.enforceModelOnLoad = result.enforceModelOnLoad !== false;
+      state.applyFavoriteModel = result.applyFavoriteModel === true;
+      state.keepTabModel = result.keepTabModel !== false;
+      state.enforceThinking = result.enforceThinking === true;
       updateHidingStyle();
       updateAdsStyle();
-      debouncedCheckAndApplyFavoriteModel();
+      debouncedSyncModel();
 
       if (!state.favoriteModel && !result.onboardingDismissed) {
         showOnboardingCard();
@@ -1168,22 +1200,22 @@
           state.removeComputerAds = message.settings.removeComputerAds;
           updateAdsStyle();
         }
+        // Changing these in the popup is an explicit request for this tab, so it overrides the tab's manual pick.
         if ('favoriteModel' in message.settings) {
           state.favoriteModel = message.settings.favoriteModel;
-          state.lastSelectionTime = 0;
-          state.hasAppliedFavorite = false;
-          state.lastObservedModelText = '';
-          debouncedCheckAndApplyFavoriteModel();
+          resetModelSync({ clearTabModel: true });
         }
-        if ('enableThinking' in message.settings) {
-          state.enableThinking = message.settings.enableThinking;
-          state.lastSelectionTime = 0;
-          debouncedCheckAndApplyFavoriteModel();
+        if ('applyFavoriteModel' in message.settings) {
+          state.applyFavoriteModel = message.settings.applyFavoriteModel;
+          resetModelSync({ clearTabModel: state.applyFavoriteModel });
         }
-        if ('enforceModelOnLoad' in message.settings) {
-          state.enforceModelOnLoad = message.settings.enforceModelOnLoad;
-          state.lastSelectionTime = 0;
-          debouncedCheckAndApplyFavoriteModel();
+        if ('keepTabModel' in message.settings) {
+          state.keepTabModel = message.settings.keepTabModel;
+          resetModelSync({});
+        }
+        if ('enforceThinking' in message.settings) {
+          state.enforceThinking = message.settings.enforceThinking;
+          resetModelSync({ clearTabThinking: state.enforceThinking });
         }
       }
     });
@@ -1191,6 +1223,8 @@
 
   function init() {
     console.log("[PlexiCopy] Running init sequence...");
+    document.addEventListener('click', handleUserMenuAction, true);
+    document.addEventListener('keydown', handleUserMenuAction, true);
     initSettings();
     scanAndAttach();
     initObserver();
