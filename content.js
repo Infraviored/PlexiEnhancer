@@ -1,6 +1,7 @@
 (() => {
   const CLEAN_BUTTON_LABEL = 'Copy without Citations';
   const STRIP_MD_BUTTON_LABEL = 'Copy without citations and Markdown';
+  const FORMATTED_BUTTON_LABEL = 'Copy formatted without citations';
 
   const CONFIG = {
     DEBUG: false,
@@ -90,15 +91,32 @@
     },
   };
 
+  const CITATION_SELECTORS = [
+    '.citation-nbsp',
+    'span.inline-flex[aria-label*=".pdf"]',
+    'span[data-pplx-citation]',
+    'span.citation',
+    'span:has(> [data-pplx-citation])',
+  ];
+
   const CITATION_HIDE_STYLE = `
-    .citation-nbsp,
-    span.inline-flex[aria-label*=".pdf"],
-    span[data-pplx-citation],
-    span.citation,
-    span:has(> [data-pplx-citation]) {
+    ${CITATION_SELECTORS.join(',\n    ')} {
       display: none !important;
     }
   `;
+
+  // Everything in a rendered answer that is UI or citation rather than content.
+  const FORMATTED_REMOVE_SELECTORS = [
+    ...CITATION_SELECTORS,
+    'button',
+    'svg',
+    '[hidden]',
+    '[aria-hidden="true"]',
+    '.katex-mathml',
+  ];
+
+  // Attributes worth keeping when pasting into mail/office programs; everything else is dropped.
+  const FORMATTED_KEEP_ATTRIBUTES = new Set(['href', 'src', 'alt', 'colspan', 'rowspan', 'start']);
 
   const ADS_HIDE_STYLE = `
     div.fixed.bottom-0.right-0:has(a[href*="/computer"]),
@@ -349,6 +367,83 @@
     }
   }
 
+  // The rendered answer body belonging to a copy button: the nearest ancestor that contains answer prose.
+  function findAnswerProse(copyButton) {
+    for (let el = copyButton.parentElement; el && el !== document.body; el = el.parentElement) {
+      const prose = el.querySelectorAll('[data-renderer="lm"], .prose');
+      if (prose.length) {
+        return Array.from(prose).filter(p => !Array.from(prose).some(o => o !== p && o.contains(p)));
+      }
+    }
+    return [];
+  }
+
+  function buildFormattedCopy(proseElements) {
+    const wrapper = document.createElement('div');
+    proseElements.forEach(p => wrapper.appendChild(p.cloneNode(true)));
+
+    FORMATTED_REMOVE_SELECTORS.forEach(sel => {
+      wrapper.querySelectorAll(sel).forEach(el => el.remove());
+    });
+    wrapper.querySelectorAll('*').forEach(el => {
+      Array.from(el.attributes).forEach(attr => {
+        if (!FORMATTED_KEEP_ATTRIBUTES.has(attr.name)) el.removeAttribute(attr.name);
+      });
+    });
+
+    // innerText needs layout to produce line breaks, so measure it off-screen.
+    wrapper.style.cssText = 'position: fixed; left: -9999px; top: 0; white-space: normal;';
+    document.body.appendChild(wrapper);
+    const text = cleanText(wrapper.innerText);
+    wrapper.removeAttribute('style');
+    wrapper.remove();
+
+    return { html: wrapper.innerHTML.trim(), text };
+  }
+
+  async function writeHtmlToClipboard(html, text) {
+    // A copy event inside the click gesture is the most widely supported way to set text/html.
+    let wrote = false;
+    const onCopy = (event) => {
+      event.clipboardData.setData('text/html', html);
+      event.clipboardData.setData('text/plain', text);
+      event.preventDefault();
+      wrote = true;
+    };
+    document.addEventListener('copy', onCopy, true);
+    try {
+      document.execCommand('copy');
+    } catch (err) { }
+    document.removeEventListener('copy', onCopy, true);
+    if (wrote) return true;
+
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([text], { type: 'text/plain' }),
+      })]);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async function copyFormattedText(copyButton, formattedButton) {
+    try {
+      const prose = findAnswerProse(copyButton);
+      const { html, text } = prose.length ? buildFormattedCopy(prose) : { html: '', text: '' };
+      if (!html || !text) {
+        showTempStatus(formattedButton, 'Nothing to copy');
+        return;
+      }
+      const ok = await writeHtmlToClipboard(html, text);
+      if (ok) wiggle(formattedButton);
+      showTempStatus(formattedButton, ok ? 'Copied formatted' : 'Copy failed');
+    } catch (err) {
+      showTempStatus(formattedButton, 'Copy failed');
+    }
+  }
+
   function placeButton(nextToButton) {
     if (!nextToButton || nextToButton.dataset.cleanCopyAttached === 'true') return;
 
@@ -370,8 +465,18 @@
       copyCleanText(nextToButton, stripBtn, true);
     });
 
+    // Third button: keep rich-text formatting (bold, headings, lists) for mail/office programs
+    const formattedBtn = createButton(FORMATTED_BUTTON_LABEL, 'icons/copy-formatted.svg');
+    formattedBtn.dataset.copyFormattedButton = 'true';
+    formattedBtn.dataset.cleanCopyAttached = 'true';
+    formattedBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      copyFormattedText(nextToButton, formattedBtn);
+    });
+
     // We add them after the native copy button
     // To keep them together, we could wrap them or just insert them sequentially
+    nextToButton.insertAdjacentElement('afterend', formattedBtn);
     nextToButton.insertAdjacentElement('afterend', stripBtn);
     nextToButton.insertAdjacentElement('afterend', cleanBtn);
 
@@ -379,7 +484,8 @@
   }
 
   function isCopyButton(button) {
-    if (button.dataset.cleanCopyButton === 'true' || button.dataset.stripMdButton === 'true') {
+    if (button.dataset.cleanCopyButton === 'true' || button.dataset.stripMdButton === 'true' ||
+        button.dataset.copyFormattedButton === 'true') {
       return false;
     }
     const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').toLowerCase().trim();

@@ -1,2 +1,3 @@
 dist/
 *.code-workspace
+.amo-upload-uuid

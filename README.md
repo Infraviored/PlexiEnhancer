@@ -21,6 +21,9 @@ To avoid fighting Perplexity in a loop, automatic switches are capped at 3 per m
 #### 🧼 Smart Markdown Copying
 Click the custom copy icon next to Perplexity's native copy button to get the answer in clean Markdown. It keeps all formatting (tables, bold text, headers, and code snippets) but completely deletes citation numbers (like [1], [2]) and the long list of source links at the bottom.
 
+#### ✍️ Formatted Copying
+Pasting into an email program, Word, or Google Docs? The third copy icon (with the **B**) copies the answer as rich text: headings, bold, lists, tables and links stay formatted, while citations and source links are removed.
+
 #### 📄 Plain Text Copying
 Need the answer as clean, raw text without any formatting? Click the secondary copy icon to strip out all Markdown elements and citations instantly. The extension also normalizes inconsistent bullet points (like * or +) into a clean, uniform list format.
 
