@@ -1,3 +1,7 @@
-dist/
-*.code-workspace
 .amo-upload-uuid
+build/
+*.code-workspace
+dist/
+node_modules/
+web-ext-artifacts/
+.wt/

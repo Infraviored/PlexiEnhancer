@@ -1,0 +1,22 @@
+{
+  "name": "PlexiEnhancer",
+  "version": "2.3",
+  "description": "Clean up Perplexity answers (hide citations, smart copy answers) keep the model you pick per tab, and optionally enforce thinking.",
+  "permissions": [
+    "activeTab",
+    "clipboardRead",
+    "clipboardWrite",
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://www.perplexity.ai/*",
+        "*://perplexity.ai/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ]
+}

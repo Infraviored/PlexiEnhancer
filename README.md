@@ -1,6 +1,6 @@
 # 🦊 PlexiEnhancer (formerly PlexiCopy)
 
-**Clean up and enhance your Perplexity workflow.** PlexiCopy is now officially **PlexiEnhancer**—a Firefox extension designed to give you perfectly sanitized copies of AI answers (free of citation markers, bulk URLs, and messy formatting) and keep the model you actually chose.
+**Clean up and enhance your Perplexity workflow.** PlexiCopy is now officially **PlexiEnhancer**—a browser extension for Firefox and Chrome designed to give you perfectly sanitized copies of AI answers (free of citation markers, bulk URLs, and messy formatting) and keep the model you actually chose.
 
 Perplexity has a tendency to silently reset your selected model back to cheap defaults (like "Best", "Model", or "Pro") even within a single chat session to reduce server-side costs. PlexiEnhancer remembers the model you picked in each tab and switches back when Perplexity resets it. A model you pick by hand always wins.
 
@@ -39,3 +39,30 @@ Clean up the Perplexity layout to stay focused:
 
 
 
+
+---
+
+### 🧩 Chrome
+
+Not in the Chrome Web Store yet. Load it unpacked: run `npm run build:chrome`, open `chrome://extensions`, enable Developer mode, click *Load unpacked* and pick `build/chrome/`.
+
+### 🛠️ Development
+
+One source tree, two browsers:
+
+```
+src/                    content script, popup, icons (shared)
+manifests/base.json     manifest keys common to both
+manifests/firefox.json  Firefox: Manifest V2, browser_action, SVG icons, Gecko ID
+manifests/chrome.json   Chrome: Manifest V3, action, PNG icons
+scripts/build.mjs       builds build/<browser>/ and dist/*.zip
+```
+
+```bash
+npm install
+npm run build          # Firefox + Chrome
+npm run lint:firefox   # web-ext lint on build/firefox
+npm run check:chrome   # loads build/chrome in headless Chromium
+```
+
+Firefox dev load: `about:debugging` → *This Firefox* → *Load Temporary Add-on* → `build/firefox/manifest.json`.
