@@ -43,7 +43,8 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.local.set(settings, () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0]) {
-          chrome.tabs.sendMessage(tabs[0].id, { action: 'updateSettings', settings });
+          // tabs without our content script (non-Perplexity pages) have no receiver: ignore that
+          chrome.tabs.sendMessage(tabs[0].id, { action: 'updateSettings', settings }, () => void chrome.runtime.lastError);
         }
       });
     });

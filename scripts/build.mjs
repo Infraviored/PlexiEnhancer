@@ -63,7 +63,7 @@ for (const target of targets) {
   try {
     execFileSync('zip', ['-qr', '-X', zip, '.', '-x', '.*'], { cwd: out });
   } catch (e) {
-    if (e.code === 'ENOENT') throw new Error('the `zip` command is missing; install it (e.g. apt install zip). build/' + target + '/ is complete.');
+    if (e.code === 'ENOENT') throw new Error('the `zip` command is missing; install it and make sure it is on PATH. build/' + target + '/ is complete.');
     throw e;
   }
   console.log(`${target}: build/${target}/  dist/${name}-${target}-${manifest.version}.zip`);
