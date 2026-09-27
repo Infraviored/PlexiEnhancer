@@ -1,8 +1,5 @@
 {
   "manifest_version": 2,
-  "name": "PlexiEnhancer",
-  "version": "2.3",
-  "description": "Clean up Perplexity answers (hide citations, smart copy answers) keep the model you pick per tab, and optionally enforce thinking.",
   "browser_specific_settings": {
     "gecko": {
       "id": "plexicopy@local",
@@ -18,27 +15,10 @@
     "64": "icons/icon.svg",
     "128": "icons/icon.svg"
   },
-  "permissions": [
-    "activeTab",
-    "clipboardRead",
-    "clipboardWrite",
-    "storage"
-  ],
   "browser_action": {
     "default_title": "PlexiEnhancer Settings",
     "default_popup": "popup.html"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "*://www.perplexity.ai/*",
-        "*://perplexity.ai/*"
-      ],
-      "js": [
-        "content.js"
-      ]
-    }
-  ],
   "web_accessible_resources": [
     "icons/*"
   ]

@@ -347,7 +347,8 @@
 
   async function copyCleanText(copyButton, cleanButton, shouldStripMarkdown = false) {
     try {
-      const raw = await copyUsingNativeButton(copyButton);
+      // Chrome does not let content scripts read the clipboard; fall back to the answer's DOM text.
+      const raw = (await copyUsingNativeButton(copyButton)) || extractAnswerText(copyButton);
       let cleaned = cleanText(raw);
 
       if (shouldStripMarkdown) {
@@ -1142,7 +1143,9 @@
             resetModelSync({ clearTabModel: true, clearTabThinking: true });
             
             try {
-              extensionApi.runtime.sendMessage({ action: 'settingsUpdatedExternally' });
+              // nobody listens while the popup is closed; swallow that rejection
+              const sent = extensionApi.runtime.sendMessage({ action: 'settingsUpdatedExternally' });
+              if (sent && sent.catch) sent.catch(() => {});
             } catch(e){}
 
             debouncedSyncModel();

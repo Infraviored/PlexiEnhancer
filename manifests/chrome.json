@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "icons": {
+    "32": "icons/icon-32.png",
+    "64": "icons/icon-64.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "PlexiEnhancer Settings",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "32": "icons/icon-32.png",
+      "64": "icons/icon-64.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*"
+      ],
+      "matches": [
+        "*://www.perplexity.ai/*",
+        "*://perplexity.ai/*"
+      ]
+    }
+  ],
+  "minimum_chrome_version": "120"
+}
