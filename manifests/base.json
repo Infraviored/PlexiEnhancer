@@ -1,9 +1,8 @@
 {
   "name": "PlexiEnhancer",
-  "version": "2.4",
+  "version": "2.4.1",
   "description": "Clean up Perplexity: copy answers without citations, keep the model you pick in each tab, and optionally enforce thinking.",
   "permissions": [
-    "activeTab",
     "clipboardRead",
     "clipboardWrite",
     "storage"
