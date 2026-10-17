@@ -1,3 +1,5 @@
+<img src="src/icons/icon.svg" alt="" width="64" height="64">
+
 # 🦊 PlexiEnhancer (formerly PlexiCopy)
 
 **Clean up and enhance your Perplexity workflow.** PlexiCopy is now officially **PlexiEnhancer**—a browser extension for Firefox and Chrome designed to give you perfectly sanitized copies of AI answers (free of citation markers, bulk URLs, and messy formatting) and keep the model you actually chose.
