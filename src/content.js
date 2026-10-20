@@ -15,6 +15,7 @@
     SELECTION_WAIT: 200,
     THINKING_TOGGLE_WAIT: 50,
     SCRAPE_MENU_WAIT: 200,
+    TYPING_IDLE: 1500,
   };
 
   const console = {
@@ -64,6 +65,7 @@
     adsStyleElement: null,
     favoriteModel: '',
     lastSelectionTime: 0,
+    lastTypingTime: 0,
     chatObserver: null,
     observedContainer: null,
     applyFavoriteModel: false,
@@ -655,6 +657,31 @@
     return waitForMenuItems();
   }
 
+  // Focus and caret of whatever the user was editing, so a menu session can put them back.
+  // Focusing the input without a saved range puts the caret at the start (Firefox).
+  function saveFocus() {
+    const element = document.activeElement;
+    if (!element || element === document.body) return null;
+    if (typeof element.selectionStart === 'number') {
+      return { element, start: element.selectionStart, end: element.selectionEnd };
+    }
+    const selection = window.getSelection();
+    const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+    return { element, range: range && element.contains(range.startContainer) ? range : null };
+  }
+
+  function restoreFocus(saved) {
+    if (!saved || !saved.element.isConnected) return;
+    saved.element.focus({ preventScroll: true });
+    if (typeof saved.start === 'number') {
+      saved.element.setSelectionRange(saved.start, saved.end);
+    } else if (saved.range) {
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(saved.range);
+    }
+  }
+
   function closeModelMenu() {
     const menu = document.querySelector('[role="menu"]');
     if (menu) {
@@ -667,7 +694,6 @@
         cancelable: true
       }));
     }
-    document.getElementById('ask-input')?.focus();
   }
 
   // Turns thinking on for the given model item. Returns 'unsupported' if the model has no thinking switch.
@@ -678,7 +704,9 @@
     const isDisabled = thinkingItem.getAttribute('aria-disabled') === 'true' ||
                        thinkingItem.hasAttribute('data-disabled') ||
                        thinkingItem.querySelector('button[disabled]') !== null;
-    if (isDisabled || thinkingItem.getAttribute('aria-checked') === 'true') return 'ok';
+    // A disabled switch cannot be turned on; reporting 'ok' would make syncModel retry forever.
+    if (isDisabled) return 'unsupported';
+    if (thinkingItem.getAttribute('aria-checked') === 'true') return 'ok';
 
     console.log("[PlexiCopy] Turning thinking on...");
     const toggleTarget = thinkingItem.querySelector('button[role="switch"]') ||
@@ -695,6 +723,7 @@
   async function runModelMenuSession(trigger, selectName, currentLabel) {
     state.isSelectingModel = true;
     state.lastSelectionTime = Date.now();
+    const savedFocus = saveFocus();
     try {
       let items = await openModelMenu(trigger);
 
@@ -733,6 +762,7 @@
       console.error("[PlexiCopy] ERROR during model menu session:", err);
       closeModelMenu();
     } finally {
+      restoreFocus(savedFocus);
       // Re-check once the cooldown ends, in case Perplexity reset the model again in the meantime.
       state.lastObservedModelText = '';
       state.lastSelectionTime = Date.now();
@@ -759,6 +789,13 @@
     const cooldownLeft = CONFIG.AUTO_SELECT_COOLDOWN - (now - state.lastSelectionTime);
     if (cooldownLeft > 0) {
       setTimeout(debouncedSyncModel, cooldownLeft + 50);
+      return;
+    }
+
+    // Opening the menu moves focus away from the input; never do that mid-typing.
+    const typingLeft = CONFIG.TYPING_IDLE - (now - state.lastTypingTime);
+    if (typingLeft > 0) {
+      setTimeout(debouncedSyncModel, typingLeft + 50);
       return;
     }
 
@@ -1334,6 +1371,9 @@
     console.log("[PlexiCopy] Running init sequence...");
     document.addEventListener('click', handleUserMenuAction, true);
     document.addEventListener('keydown', handleUserMenuAction, true);
+    document.addEventListener('input', (event) => {
+      if (event.isTrusted) state.lastTypingTime = Date.now();
+    }, true);
     initSettings();
     scanAndAttach();
     initObserver();
