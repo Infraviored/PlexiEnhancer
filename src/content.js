@@ -75,6 +75,7 @@
     lastObservedModelText: '',
     autoActionLog: [],
     noThinkingModels: new Set(),
+    pendingModelPick: null,
   };
 
   // Per-tab memory (sessionStorage survives reloads but is private to the tab).
@@ -579,7 +580,7 @@
     items.find(item => !isLockedItem(item) && !isThinkingItem(item) &&
       (isMatch(primaryName(item), name) || isMatch(item.innerText, name)));
 
-  const isModelMenuOpen = () => findTriggerButton()?.getAttribute('aria-expanded') === 'true';
+  const isModelMenuOpen = () => findTriggerButton()?.getAttribute('aria-expanded') === 'true' || document.querySelector('[role="menu"]') !== null;
 
   // Model the tab should be on: a manual pick made in this tab wins over the favorite.
   function targetModel() {
@@ -599,10 +600,50 @@
     return true;
   }
 
+  // A click inside a submenu counts for the top-level model entry that owns that submenu.
+  function getClickedModelName(item) {
+    const menus = document.querySelectorAll('[role="menu"]');
+    const topMenu = menus[0];
+    if (topMenu && menus.length > 1 && !topMenu.contains(item)) {
+      const owner = topMenu.querySelector(
+        '[role="menuitemradio"][aria-expanded="true"], [role="menuitemradio"][data-state="open"], [aria-expanded="true"], [data-state="open"]'
+      );
+      if (owner) return primaryName(owner);
+    }
+    return primaryName(item);
+  }
+
+  function resolvePendingPick(trigger) {
+    if (!state.pendingModelPick) return;
+    if (isModelMenuOpen()) return;
+    const currentLabel = trigger?.innerText.trim();
+    if (labelMatches(currentLabel, state.pendingModelPick)) {
+      tabStore.set(TAB_MODEL_KEY, state.pendingModelPick);
+      console.log("[PlexiCopy] Committed manual model pick:", state.pendingModelPick);
+    } else {
+      console.log("[PlexiCopy] Discarded pending model pick:", state.pendingModelPick);
+    }
+    state.pendingModelPick = null;
+  }
+
   // Remember what the user picks by hand (trusted events only; our own dispatched events are untrusted).
   function handleUserMenuAction(event) {
     if (!event.isTrusted || state.isSelectingModel) return;
-    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+
+    if (event.type === 'keydown') {
+      if (event.key === 'Escape') {
+        state.pendingModelPick = null;
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+    }
+
+    if (event.type === 'click' && state.pendingModelPick) {
+      if (!event.target.closest?.('[role="menu"]') && !event.target.closest?.('button[aria-haspopup="menu"]')) {
+        state.pendingModelPick = null;
+      }
+    }
+
     const item = event.target.closest?.('[role="menuitemradio"], [role="menuitem"], [role="menuitemcheckbox"]');
     if (!item || !isModelMenuOpen()) return;
 
@@ -614,23 +655,12 @@
       return;
     }
     if (isLockedItem(item)) return;
-    const name = primaryName(item);
+
+    const name = getClickedModelName(item);
     if (!name) return;
-    // Perplexity marks every model entry with aria-haspopup, so that attribute cannot tell a pick
-    // from a submenu opener. Save at once (the sync must not beat us), and undo it if the menu
-    // stays open without the label switching to that model: then the click only opened a submenu.
-    const previous = tabStore.get(TAB_MODEL_KEY);
-    tabStore.set(TAB_MODEL_KEY, name);
-    console.log("[PlexiCopy] User picked model manually:", name);
-    if (item.hasAttribute('aria-haspopup')) {
-      setTimeout(() => {
-        const label = findTriggerButton()?.innerText.trim();
-        if (isModelMenuOpen() && !labelMatches(label, name) && tabStore.get(TAB_MODEL_KEY) === name) {
-          tabStore.set(TAB_MODEL_KEY, previous);
-          console.log("[PlexiCopy] That only opened a submenu, keeping:", previous || "(none)");
-        }
-      }, CONFIG.SELECTION_WAIT);
-    }
+
+    state.pendingModelPick = name;
+    console.log("[PlexiCopy] Recorded pending model pick:", name);
   }
 
   function dispatchClickSequence(el) {
@@ -798,7 +828,13 @@
     if (state.isSelectingModel) return;
 
     const trigger = findTriggerButton();
-    if (!trigger || trigger.getAttribute('aria-expanded') === 'true') return;
+    if (!trigger) return;
+
+    // Resolve any pending manual pick before deciding whether to act.
+    resolvePendingPick(trigger);
+
+    // If a pick is still pending (menu still open), syncModel must not act.
+    if (state.pendingModelPick || isModelMenuOpen()) return;
 
     const currentModelText = trigger.innerText.trim();
 
@@ -839,7 +875,10 @@
   const debouncedSyncModel = debounce(syncModel, CONFIG.DEBOUNCE_DELAY);
 
   function resetModelSync({ clearTabModel = false, clearTabThinking = false }) {
-    if (clearTabModel) tabStore.set(TAB_MODEL_KEY, '');
+    if (clearTabModel) {
+      state.pendingModelPick = null;
+      tabStore.set(TAB_MODEL_KEY, '');
+    }
     if (clearTabThinking) tabStore.set(TAB_THINKING_OFF_KEY, '');
     state.lastSelectionTime = 0;
     state.lastObservedModelText = '';
