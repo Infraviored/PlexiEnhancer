@@ -661,6 +661,7 @@
 
     state.pendingModelPick = name;
     console.log("[PlexiCopy] Recorded pending model pick:", name);
+    debouncedSyncModel();
   }
 
   function dispatchClickSequence(el) {
@@ -833,8 +834,13 @@
     // Resolve any pending manual pick before deciding whether to act.
     resolvePendingPick(trigger);
 
-    // If a pick is still pending (menu still open), syncModel must not act.
-    if (state.pendingModelPick || isModelMenuOpen()) return;
+    // If a pick is still pending (menu still open), syncModel must not act. The chat observer
+    // does not see the menu closing (an attribute change), so look again until it resolves.
+    if (state.pendingModelPick) {
+      setTimeout(debouncedSyncModel, CONFIG.SELECTION_WAIT);
+      return;
+    }
+    if (isModelMenuOpen()) return;
 
     const currentModelText = trigger.innerText.trim();
 
