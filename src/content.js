@@ -527,6 +527,14 @@
     return cleanText === cleanTarget;
   };
 
+  // The trigger label drops the vendor that the menu entry carries ("Sonnet 5.5" vs "Claude Sonnet 5.5").
+  const labelMatches = (label, name) => {
+    if (isMatch(label, name)) return true;
+    const cleanLabel = (label || '').toLowerCase().replace(/\s*thinking\s*$/, '').trim();
+    const cleanName = (name || '').toLowerCase().trim();
+    return cleanLabel !== '' && cleanName.endsWith(' ' + cleanLabel);
+  };
+
   function debounce(fn, delay) {
     let timeoutId;
     return function (...args) {
@@ -538,7 +546,7 @@
   const findTriggerButton = () => {
     const chatContainer = document.querySelector('[data-ask-input-container="true"]');
     if (chatContainer) {
-      const btn = chatContainer.querySelector('.inline-flex.-mr-sm button[aria-haspopup="menu"]');
+      const btn = chatContainer.querySelector('.inline-flex.-mr-2 button[aria-haspopup="menu"], .inline-flex.-mr-sm button[aria-haspopup="menu"]');
       if (btn) return btn;
     }
     return Array.from(document.querySelectorAll('button[aria-haspopup="menu"]'))
@@ -593,7 +601,7 @@
     if (!event.isTrusted || state.isSelectingModel) return;
     if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
     const item = event.target.closest?.('[role="menuitemradio"], [role="menuitem"], [role="menuitemcheckbox"]');
-    if (!item || item.hasAttribute('aria-haspopup') || !isModelMenuOpen()) return;
+    if (!item || !isModelMenuOpen()) return;
 
     state.autoActionLog = [];
     if (isThinkingItem(item)) {
@@ -604,9 +612,21 @@
     }
     if (isLockedItem(item)) return;
     const name = primaryName(item);
-    if (name) {
-      tabStore.set(TAB_MODEL_KEY, name);
-      console.log("[PlexiCopy] User picked model manually:", name);
+    if (!name) return;
+    // Perplexity marks every model entry with aria-haspopup, so that attribute cannot tell a pick
+    // from a submenu opener. Save at once (the sync must not beat us), and undo it if the menu
+    // stays open without the label switching to that model: then the click only opened a submenu.
+    const previous = tabStore.get(TAB_MODEL_KEY);
+    tabStore.set(TAB_MODEL_KEY, name);
+    console.log("[PlexiCopy] User picked model manually:", name);
+    if (item.hasAttribute('aria-haspopup')) {
+      setTimeout(() => {
+        const label = findTriggerButton()?.innerText.trim();
+        if (isModelMenuOpen() && !labelMatches(label, name) && tabStore.get(TAB_MODEL_KEY) === name) {
+          tabStore.set(TAB_MODEL_KEY, previous);
+          console.log("[PlexiCopy] That only opened a submenu, keeping:", previous || "(none)");
+        }
+      }, CONFIG.SELECTION_WAIT);
     }
   }
 
@@ -802,7 +822,7 @@
     state.lastObservedModelText = currentModelText;
 
     const target = targetModel();
-    const needsModel = target && !isMatch(currentModelText, target);
+    const needsModel = target && !labelMatches(currentModelText, target);
     const needsThinking = shouldEnforceThinking() && !isThinkingLabel(currentModelText) &&
       !state.noThinkingModels.has(target || currentModelText);
 
