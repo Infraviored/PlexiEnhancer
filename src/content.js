@@ -75,6 +75,7 @@
     lastObservedModelText: '',
     autoActionLog: [],
     noThinkingModels: new Set(),
+    pendingModelPick: null,
   };
 
   // Per-tab memory (sessionStorage survives reloads but is private to the tab).
@@ -527,6 +528,17 @@
     return cleanText === cleanTarget;
   };
 
+  const words = (str) => (str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+
+  // The trigger label drops the vendor that the menu entry carries ("Sonnet 5.5" vs "Claude Sonnet 5.5").
+  const labelMatches = (label, name) => {
+    if (isMatch(label, name)) return true;
+    const lWords = words((label || '').replace(/\s*thinking\s*$/i, ''));
+    const nWords = words(name);
+    if (lWords.length <= 1) return false;
+    return [...lWords].sort().join(' ') === [...nWords.slice(1)].sort().join(' ');
+  };
+
   function debounce(fn, delay) {
     let timeoutId;
     return function (...args) {
@@ -538,7 +550,7 @@
   const findTriggerButton = () => {
     const chatContainer = document.querySelector('[data-ask-input-container="true"]');
     if (chatContainer) {
-      const btn = chatContainer.querySelector('.inline-flex.-mr-sm button[aria-haspopup="menu"]');
+      const btn = chatContainer.querySelector('.inline-flex.-mr-2 button[aria-haspopup="menu"], .inline-flex.-mr-sm button[aria-haspopup="menu"]');
       if (btn) return btn;
     }
     return Array.from(document.querySelectorAll('button[aria-haspopup="menu"]'))
@@ -568,7 +580,7 @@
     items.find(item => !isLockedItem(item) && !isThinkingItem(item) &&
       (isMatch(primaryName(item), name) || isMatch(item.innerText, name)));
 
-  const isModelMenuOpen = () => findTriggerButton()?.getAttribute('aria-expanded') === 'true';
+  const isModelMenuOpen = () => findTriggerButton()?.getAttribute('aria-expanded') === 'true' || document.querySelector('[role="menu"]') !== null;
 
   // Model the tab should be on: a manual pick made in this tab wins over the favorite.
   function targetModel() {
@@ -588,12 +600,52 @@
     return true;
   }
 
+  // A click inside a submenu counts for the top-level model entry that owns that submenu.
+  function getClickedModelName(item) {
+    const menus = document.querySelectorAll('[role="menu"]');
+    const topMenu = menus[0];
+    if (topMenu && menus.length > 1 && !topMenu.contains(item)) {
+      const owner = topMenu.querySelector(
+        '[role="menuitemradio"][aria-expanded="true"], [role="menuitemradio"][data-state="open"], [aria-expanded="true"], [data-state="open"]'
+      );
+      if (owner) return primaryName(owner);
+    }
+    return primaryName(item);
+  }
+
+  function resolvePendingPick(trigger) {
+    if (!state.pendingModelPick) return;
+    if (isModelMenuOpen()) return;
+    const currentLabel = trigger?.innerText.trim();
+    if (labelMatches(currentLabel, state.pendingModelPick)) {
+      tabStore.set(TAB_MODEL_KEY, state.pendingModelPick);
+      console.log("[PlexiCopy] Committed manual model pick:", state.pendingModelPick);
+    } else {
+      console.log("[PlexiCopy] Discarded pending model pick:", state.pendingModelPick);
+    }
+    state.pendingModelPick = null;
+  }
+
   // Remember what the user picks by hand (trusted events only; our own dispatched events are untrusted).
   function handleUserMenuAction(event) {
     if (!event.isTrusted || state.isSelectingModel) return;
-    if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+
+    if (event.type === 'keydown') {
+      if (event.key === 'Escape') {
+        state.pendingModelPick = null;
+        return;
+      }
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+    }
+
+    if (event.type === 'click' && state.pendingModelPick) {
+      if (!event.target.closest?.('[role="menu"]') && !event.target.closest?.('button[aria-haspopup="menu"]')) {
+        state.pendingModelPick = null;
+      }
+    }
+
     const item = event.target.closest?.('[role="menuitemradio"], [role="menuitem"], [role="menuitemcheckbox"]');
-    if (!item || item.hasAttribute('aria-haspopup') || !isModelMenuOpen()) return;
+    if (!item || !isModelMenuOpen()) return;
 
     state.autoActionLog = [];
     if (isThinkingItem(item)) {
@@ -603,11 +655,13 @@
       return;
     }
     if (isLockedItem(item)) return;
-    const name = primaryName(item);
-    if (name) {
-      tabStore.set(TAB_MODEL_KEY, name);
-      console.log("[PlexiCopy] User picked model manually:", name);
-    }
+
+    const name = getClickedModelName(item);
+    if (!name) return;
+
+    state.pendingModelPick = name;
+    console.log("[PlexiCopy] Recorded pending model pick:", name);
+    debouncedSyncModel();
   }
 
   function dispatchClickSequence(el) {
@@ -775,7 +829,18 @@
     if (state.isSelectingModel) return;
 
     const trigger = findTriggerButton();
-    if (!trigger || trigger.getAttribute('aria-expanded') === 'true') return;
+    if (!trigger) return;
+
+    // Resolve any pending manual pick before deciding whether to act.
+    resolvePendingPick(trigger);
+
+    // If a pick is still pending (menu still open), syncModel must not act. The chat observer
+    // does not see the menu closing (an attribute change), so look again until it resolves.
+    if (state.pendingModelPick) {
+      setTimeout(debouncedSyncModel, CONFIG.SELECTION_WAIT);
+      return;
+    }
+    if (isModelMenuOpen()) return;
 
     const currentModelText = trigger.innerText.trim();
 
@@ -802,7 +867,7 @@
     state.lastObservedModelText = currentModelText;
 
     const target = targetModel();
-    const needsModel = target && !isMatch(currentModelText, target);
+    const needsModel = target && !labelMatches(currentModelText, target);
     const needsThinking = shouldEnforceThinking() && !isThinkingLabel(currentModelText) &&
       !state.noThinkingModels.has(target || currentModelText);
 
@@ -816,7 +881,10 @@
   const debouncedSyncModel = debounce(syncModel, CONFIG.DEBOUNCE_DELAY);
 
   function resetModelSync({ clearTabModel = false, clearTabThinking = false }) {
-    if (clearTabModel) tabStore.set(TAB_MODEL_KEY, '');
+    if (clearTabModel) {
+      state.pendingModelPick = null;
+      tabStore.set(TAB_MODEL_KEY, '');
+    }
     if (clearTabThinking) tabStore.set(TAB_THINKING_OFF_KEY, '');
     state.lastSelectionTime = 0;
     state.lastObservedModelText = '';
