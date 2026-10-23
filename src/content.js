@@ -527,12 +527,15 @@
     return cleanText === cleanTarget;
   };
 
+  const words = (str) => (str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+
   // The trigger label drops the vendor that the menu entry carries ("Sonnet 5.5" vs "Claude Sonnet 5.5").
   const labelMatches = (label, name) => {
     if (isMatch(label, name)) return true;
-    const cleanLabel = (label || '').toLowerCase().replace(/\s*thinking\s*$/, '').trim();
-    const cleanName = (name || '').toLowerCase().trim();
-    return cleanLabel !== '' && cleanName.endsWith(' ' + cleanLabel);
+    const lWords = words((label || '').replace(/\s*thinking\s*$/i, ''));
+    const nWords = words(name);
+    if (lWords.length <= 1) return false;
+    return [...lWords].sort().join(' ') === [...nWords.slice(1)].sort().join(' ');
   };
 
   function debounce(fn, delay) {
